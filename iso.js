@@ -24,6 +24,11 @@ function hash2(x, y, s) {
 }
 function hashStr(s) { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = (h * 16777619) >>> 0; } return h; }
 function dith(a, b, p, seed) { return (x, y) => (hash2(x, y, seed) < p ? b : a); }
+// Subtle dithered two-tone speckle for wall/roof texture. Opt out per building with cfg.texture = false.
+function faceColor(base, f, cfg, seed) {
+  if (cfg && cfg.texture === false) return sh(base, f);
+  return dith(sh(base, f * 1.06), sh(base, f * 0.92), 0.22, seed);
+}
 
 /* ---------------- raster ---------------- */
 function Raster(w, h) { this.w = w; this.h = h; this.d = new Uint8ClampedArray(w * h * 4); }
@@ -144,6 +149,13 @@ function box(R, p, c0, r0, c1, r1, z0, z1, col) {
   if (col.top) R.fill(qTop(p, c0, r0, c1, r1, z1), col.top);
 }
 
+// Thin line along the near vertical edge shared by the two visible box faces —
+// cheap corner definition/AO without a full lighting model.
+function edgeAccent(R, p, c, r, z0, z1, color) {
+  const a = p(c, r, z0), b = p(c, r, z1);
+  R.line(a.x, a.y, b.x, b.y, color);
+}
+
 function pyramid(R, p, c0, r0, c1, r1, z0, z1, col) {
   const cm = (c0 + c1) / 2, rm = (r0 + r1) / 2, apex = p(cm, rm, z1);
   R.fill([p(c0, r0, z0), p(c1, r0, z0), apex], col.far);
@@ -223,27 +235,41 @@ function spread(len, item, gap) {
 
 function windowRows(bodyH) { return Math.max(1, Math.min(4, Math.floor((bodyH - 5) / 7))); }
 
+// Optional frame + mullion turns a flat glass rect into a windowpane, for the higher-detail style.
+function windowTrim(R, quad, frameColor) {
+  R.line(quad[0].x, quad[0].y, quad[1].x, quad[1].y, frameColor);
+  R.line(quad[1].x, quad[1].y, quad[2].x, quad[2].y, frameColor);
+  R.line(quad[2].x, quad[2].y, quad[3].x, quad[3].y, frameColor);
+  R.line(quad[3].x, quad[3].y, quad[0].x, quad[0].y, frameColor);
+  R.line((quad[0].x + quad[3].x) / 2, (quad[0].y + quad[3].y) / 2, (quad[1].x + quad[2].x) / 2, (quad[1].y + quad[2].y) / 2, frameColor);
+}
+
 function drawWindows(R, p, c0, r0, c1, r1, bodyH, cfg, seed) {
   const rows = cfg.windows === 0 ? 0 : windowRows(bodyH);
   const glass = cfg.windowColor || '#5fb8c9';
   const ww = 4, wh = 5, gap = 6;
+  const frame = cfg.windowFrame !== false ? sh(cfg.wall || '#2a2420', 0.35) : null;
   for (let i = 0; i < rows; i++) {
     const z = 5 + i * 7;
     if (z + wh > bodyH - 1) break;
     for (const s of spread((r1 - r0) * AHW, ww, gap)) {
       const a = r0 + s / AHW, b = a + ww / AHW;
       const lit = hash2(i, Math.round(s), seed) < 0.28;
-      R.fill(qRight(p, c1, a, b, z, z + wh), lit ? sh(WIN_LIT, 0.72) : sh(glass, 0.5));
+      const quad = qRight(p, c1, a, b, z, z + wh);
+      R.fill(quad, lit ? sh(WIN_LIT, 0.72) : sh(glass, 0.5));
+      if (frame) windowTrim(R, quad, frame);
     }
     for (const s of spread((c1 - c0) * AHW, ww, gap)) {
       const a = c0 + s / AHW, b = a + ww / AHW;
       const lit = hash2(i, Math.round(s), seed + 7) < 0.28;
-      R.fill(qLeft(p, r1, a, b, z, z + wh), lit ? WIN_LIT : sh(glass, 0.8));
+      const quad = qLeft(p, r1, a, b, z, z + wh);
+      R.fill(quad, lit ? WIN_LIT : sh(glass, 0.8));
+      if (frame) windowTrim(R, quad, frame);
     }
   }
 }
 
-function roof(R, p, c0, r0, c1, r1, z, cfg, wallCol) {
+function roof(R, p, c0, r0, c1, r1, z, cfg, wallCol, seed) {
   // Winter settles on the upward-facing surfaces rather than recolouring the whole roof.
   const rc = isSnowy() ? mixHex(cfg.roofColor || '#4a3f3a', '#eef4f8', 0.72) : (cfg.roofColor || '#4a3f3a');
   const type = cfg.roofType || 'flat';
@@ -251,7 +277,9 @@ function roof(R, p, c0, r0, c1, r1, z, cfg, wallCol) {
   const along = cfg.ridge === 'row' ? 'row' : 'col';
 
   if (type === 'flat') {
-    box(R, p, c0, r0, c1, r1, z, z + 2, { top: sh(rc, 1.05), left: sh(rc, 0.8), right: sh(rc, 0.58) });
+    box(R, p, c0, r0, c1, r1, z, z + 2, {
+      top: faceColor(rc, 1.05, cfg, (seed || 0) + 31), left: sh(rc, 0.8), right: sh(rc, 0.58),
+    });
     R.fill(qTop(p, c0 + 0.08, r0 + 0.08, c1 - 0.08, r1 - 0.08, z + 1), sh(rc, 0.72));
     if (cfg.hvac) {
       const cm = (c0 + c1) / 2, rm = (r0 + r1) / 2;
@@ -274,8 +302,8 @@ function roof(R, p, c0, r0, c1, r1, z, cfg, wallCol) {
     // Ridge inset from both ends; the two end slopes are the hips.
     const q = (hi - lo) * 0.5;
     profile = [{ s: lo, z: z }, { s: mid, z: z + rh }, { s: hi, z: z }];
-    extrude(R, p, along, ext[0] + q * 0.55, ext[1] - q * 0.55, profile, function (A, B) {
-      return B.z < A.z ? sh(rc, 0.72) : sh(rc, 1.02);
+    extrude(R, p, along, ext[0] + q * 0.55, ext[1] - q * 0.55, profile, function (A, B, i) {
+      return faceColor(rc, B.z < A.z ? 0.72 : 1.02, cfg, (seed || 0) + 40 + i);
     }, null);
     const apexA = along === 'col' ? p(ext[0] + q * 0.55, mid, z + rh) : p(mid, ext[0] + q * 0.55, z + rh);
     const apexB = along === 'col' ? p(ext[1] - q * 0.55, mid, z + rh) : p(mid, ext[1] - q * 0.55, z + rh);
@@ -289,8 +317,8 @@ function roof(R, p, c0, r0, c1, r1, z, cfg, wallCol) {
   }
   else profile = [{ s: lo, z: z }, { s: mid, z: z + rh }, { s: hi, z: z }];
 
-  extrude(R, p, along, ext[0], ext[1], profile, function (A, B) {
-    return B.z < A.z ? sh(rc, 0.7) : sh(rc, 1.03);
+  extrude(R, p, along, ext[0], ext[1], profile, function (A, B, i) {
+    return faceColor(rc, B.z < A.z ? 0.7 : 1.03, cfg, (seed || 0) + 50 + i);
   }, sh(cfg.wall || wallCol, along === 'col' ? 0.58 : 0.8));
 }
 
@@ -299,7 +327,9 @@ function genericBuild(R, proj, cfg, fw, fh, rot, seed) {
   const c0 = 0, r0 = 0, c1 = fw, r1 = fh;
   const bodyH = cfg.bodyH;
   const wall = cfg.wall;
-  const col = { top: sh(wall, 1.0), left: sh(wall, 0.8), right: sh(wall, 0.58) };
+  const col = {
+    top: faceColor(wall, 1.0, cfg, seed), left: faceColor(wall, 0.8, cfg, seed + 1), right: faceColor(wall, 0.58, cfg, seed + 2),
+  };
   if (rot) cfg = Object.assign({}, cfg, { ridge: cfg.ridge === 'row' ? 'col' : 'row' });
 
   if (cfg.columns) {
@@ -312,6 +342,9 @@ function genericBuild(R, proj, cfg, fw, fh, rot, seed) {
   } else {
     box(R, p, c0, r0, c1, r1, 0, bodyH, col);
   }
+
+  // Cheap corner AO along the near vertical edge. Opt out per building with cfg.edgeAO = false.
+  if (cfg.edgeAO !== false) edgeAccent(R, p, c1, r1, 0, bodyH, sh(wall, 0.4));
 
   drawWindows(R, p, c0, r0, c1, r1, bodyH, cfg, seed);
 
@@ -333,7 +366,7 @@ function genericBuild(R, proj, cfg, fw, fh, rot, seed) {
       function () { return sh(cfg.awning, 0.9); }, null);
   }
 
-  roof(R, p, c0, r0, c1, r1, bodyH, cfg, wall);
+  roof(R, p, c0, r0, c1, r1, bodyH, cfg, wall, seed);
 
   if (cfg.stacks) {
     const st = cfg.stackH || 14;
@@ -410,20 +443,28 @@ const CUSTOM = {
     const legH = cfg.legH, tankH = cfg.tankH;
     const legs = [[0.22, 0.22], [0.78, 0.22], [0.22, 0.78], [0.78, 0.78]];
     legs.sort(function (a, b) { return (a[0] + a[1]) - (b[0] + b[1]); });
-    for (const L of legs) {
+    legs.forEach(function (L, li) {
       const cc = L[0] * 2, rc = L[1] * 2;
-      box(R, p, cc - 0.07, rc - 0.07, cc + 0.07, rc + 0.07, 0, legH,
-        { top: '#6a6a6a', left: sh('#6a6a6a', 0.82), right: sh('#6a6a6a', 0.6) });
-    }
+      box(R, p, cc - 0.07, rc - 0.07, cc + 0.07, rc + 0.07, 0, legH, {
+        top: dith(sh('#7a7a7a', 1), sh('#6a6a6a', 1), 0.3, 60 + li), left: sh('#6a6a6a', 0.82), right: sh('#6a6a6a', 0.6),
+      });
+    });
     for (const z of [legH * 0.35, legH * 0.7]) {
       const a = p(0.44, 0.44, z), b = p(1.56, 1.56, z);
       R.line(a.x, a.y, b.x, b.y, sh('#6a6a6a', 0.7));
       const c = p(1.56, 0.44, z), d = p(0.44, 1.56, z);
       R.line(c.x, c.y, d.x, d.y, sh('#6a6a6a', 0.7));
     }
+    const rungCol = sh('#4a4a4a', 1);
+    for (let z = 2; z < legH; z += 3) {
+      const a = p(0.78, 0.78, z);
+      R.line(a.x - 2, a.y, a.x + 2, a.y, rungCol);
+    }
     cylinder(R, p, 1, 1, 0.62, legH, legH + tankH, {
       top: sh('#b9c2c8', 1.04), lightRgb: sh('#b9c2c8', 1.0), dark: sh('#b9c2c8', 0.44),
     });
+    edgeAccent(R, p, 1.62, 1, legH, legH + tankH, sh('#7a848a', 1));
+    R.fill(qTop(p, 0.86, 0.86, 1.14, 1.14, legH + tankH * 0.5 + 2), sh('#8a9298', 0.9));
     R.fill(qLeft(p, 1.5, 0.5, 1.5, legH + tankH * 0.35, legH + tankH * 0.62), sh('#b8493f', 0.92));
     const top = p(1, 1, legH + tankH);
     pyramid(R, p, 0.42, 0.42, 1.58, 1.58, legH + tankH, legH + tankH + 6,
@@ -457,7 +498,9 @@ const CUSTOM = {
     const p = proj.p, c = p(0.5, 0.5, 0);
     const g = cfg.leaf || leafOf('oak', '#3f7a3f');
     const bare = isSnowy() && !cfg.evergreen;
-    box(R, p, 0.44, 0.44, 0.56, 0.56, 0, 7, { top: sh('#5a3a22', 1), left: sh('#5a3a22', 0.8), right: sh('#5a3a22', 0.58) });
+    box(R, p, 0.44, 0.44, 0.56, 0.56, 0, 7, {
+      top: dith(sh('#5a3a22', 1.08), sh('#5a3a22', 0.92), 0.3, 17), left: sh('#5a3a22', 0.8), right: sh('#5a3a22', 0.58),
+    });
     const cy = c.y - 13;
     if (bare) {
       // Bare winter branches instead of a canopy.
@@ -481,7 +524,9 @@ const CUSTOM = {
   pine: function (R, proj, cfg) {
     const p = proj.p, c = p(0.5, 0.5, 0);
     const g = cfg.leaf || leafOf('pine', '#2f6b4f');
-    box(R, p, 0.45, 0.45, 0.55, 0.55, 0, 5, { top: sh('#4a3018', 1), left: sh('#4a3018', 0.8), right: sh('#4a3018', 0.58) });
+    box(R, p, 0.45, 0.45, 0.55, 0.55, 0, 5, {
+      top: dith(sh('#4a3018', 1.08), sh('#4a3018', 0.92), 0.3, 19), left: sh('#4a3018', 0.8), right: sh('#4a3018', 0.58),
+    });
     for (let i = 0; i < 4; i++) {
       const w = 11 - i * 2.4, yb = c.y - 4 - i * 5, hgt = 8;
       R.fill([{ x: c.x, y: yb - hgt }, { x: c.x + w, y: yb }, { x: c.x - w, y: yb }],
@@ -516,7 +561,7 @@ const CUSTOM = {
     const deck = cfg.deck || '#8a6a4a';
 
     extrude(R, p, axis, 0, 1, profile,
-      function () { return sh(deck, 1.04); },
+      function (A, B, i) { return dith(sh(deck, 1.1), sh(deck, 0.98), 0.22, 71 + i); },
       sh(cfg.side || deck, 0.62));
 
     // Centre dashes so a road ramp reads as carriageway, not a plain wedge.
@@ -549,11 +594,13 @@ const CUSTOM = {
     const b0 = rot ? 0 : 0.5 - cfg.halfW, b1 = rot ? 1 : 0.5 + cfg.halfW;
     for (const t of [0.12, 0.88]) {
       const cc = rot ? 0.5 : t, rr = rot ? t : 0.5;
-      box(R, p, cc - 0.07, rr - 0.07, cc + 0.07, rr + 0.07, -6, z - 1,
-        { top: sh(pier, 1), left: sh(pier, 0.8), right: sh(pier, 0.56) });
+      box(R, p, cc - 0.07, rr - 0.07, cc + 0.07, rr + 0.07, -6, z - 1, {
+        top: dith(sh(pier, 1.1), sh(pier, 0.94), 0.25, 73), left: sh(pier, 0.8), right: sh(pier, 0.56),
+      });
     }
-    box(R, p, a0, b0, a1, b1, z - 2, z,
-      { top: sh(deck, 1.02), left: sh(deck, 0.78), right: sh(deck, 0.56) });
+    box(R, p, a0, b0, a1, b1, z - 2, z, {
+      top: dith(sh(deck, 1.1), sh(deck, 0.96), 0.22, 79), left: sh(deck, 0.78), right: sh(deck, 0.56),
+    });
     // Railings run down both long sides of the span.
     if (rot) {
       for (const cc of [a0, a1 - 0.06]) {
@@ -622,8 +669,9 @@ const CUSTOM = {
 
     if (st === 'stone') {
       const a = at(0), b = at(1);
-      if (rot) box(R, p, 0.42, 0, 0.58, 1, 0, H, { top: sh(col, 1.06), left: sh(col, 0.84), right: sh(col, 0.6) });
-      else box(R, p, 0, 0.42, 1, 0.58, 0, H, { top: sh(col, 1.06), left: sh(col, 0.84), right: sh(col, 0.6) });
+      const stoneCol = { top: dith(sh(col, 1.14), sh(col, 0.98), 0.3, 83), left: sh(col, 0.84), right: sh(col, 0.6) };
+      if (rot) box(R, p, 0.42, 0, 0.58, 1, 0, H, stoneCol);
+      else box(R, p, 0, 0.42, 1, 0.58, 0, H, stoneCol);
       for (let k = 0; k < 6; k++) {
         const t = k / 6 + 0.08;
         const q = at(t);
@@ -658,9 +706,11 @@ const CUSTOM = {
       }
     }
     const rails = st === 'chain' ? [H * 0.95, H * 0.1] : st === 'split' ? [H * 0.8, H * 0.42] : [H * 0.72, H * 0.32];
+    let ri = 0;
     for (const z of rails) {
-      if (rot) box(R, p, 0.47, 0, 0.53, 1, z - 1, z, { top: sh(col, 1), left: sh(col, 0.82), right: sh(col, 0.6) });
-      else box(R, p, 0, 0.47, 1, 0.53, z - 1, z, { top: sh(col, 1), left: sh(col, 0.82), right: sh(col, 0.6) });
+      const railCol = { top: dith(sh(col, 1.08), sh(col, 0.94), 0.28, 87 + ri++), left: sh(col, 0.82), right: sh(col, 0.6) };
+      if (rot) box(R, p, 0.47, 0, 0.53, 1, z - 1, z, railCol);
+      else box(R, p, 0, 0.47, 1, 0.53, z - 1, z, railCol);
     }
     if (st === 'chain') {
       const mesh = sh(col, 0.78);
@@ -691,12 +741,12 @@ const CUSTOM = {
     for (let k = -1; k <= 1; k++) {
       R.line(a.x + k, a.y, b.x + k, b.y, k === 0 ? sh(y, 1.05) : sh(y, 0.8));
     }
-    R.fill(rot ? qTop(p, 0.42, 0.14, 0.58, 0.32, H) : qTop(p, 0.14, 0.42, 0.32, 0.58, H), sh(m, 1.05));
+    R.fill(rot ? qTop(p, 0.42, 0.14, 0.58, 0.32, H) : qTop(p, 0.14, 0.42, 0.32, 0.58, H), dith(sh(m, 1.1), sh(m, 0.98), 0.25, 91));
   },
 
   seesaw: function (R, proj, cfg, fw, fh, rot) {
     const p = proj.p;
-    box(R, p, 0.44, 0.44, 0.56, 0.56, 0, 4, { top: '#8a8f94', left: sh('#8a8f94', 0.8), right: sh('#8a8f94', 0.56) });
+    box(R, p, 0.44, 0.44, 0.56, 0.56, 0, 4, { top: dith(sh('#8a8f94', 1.1), sh('#8a8f94', 0.94), 0.3, 92), left: sh('#8a8f94', 0.8), right: sh('#8a8f94', 0.56) });
     const a = rot ? p(0.5, 0.1, 7) : p(0.1, 0.5, 7);
     const b = rot ? p(0.5, 0.9, 2) : p(0.9, 0.5, 2);
     R.line(a.x, a.y, b.x, b.y, sh('#b8493f', 1.05));
@@ -766,7 +816,8 @@ const CUSTOM = {
       R.set(lx, Math.round(top.y + 6), sh('#3de17f', 1));
     } else if (cfg.sign === 'billboard') {
       R.fill([{ x: top.x - 11, y: top.y - 1 }, { x: top.x + 12, y: top.y + 10 }, { x: top.x + 12, y: top.y + 22 }, { x: top.x - 11, y: top.y + 11 }], sh('#e8e2d4', 1));
-      R.fill([{ x: top.x - 9, y: top.y + 1 }, { x: top.x + 10, y: top.y + 10 }, { x: top.x + 10, y: top.y + 18 }, { x: top.x - 9, y: top.y + 9 }], sh(cfg.plate || '#c0392b', 1));
+      R.fill([{ x: top.x - 9, y: top.y + 1 }, { x: top.x + 10, y: top.y + 10 }, { x: top.x + 10, y: top.y + 18 }, { x: top.x - 9, y: top.y + 9 }],
+        dith(sh(cfg.plate || '#c0392b', 1.08), sh(cfg.plate || '#c0392b', 0.94), 0.25, 137));
     }
   },
 
@@ -785,23 +836,32 @@ const CUSTOM = {
 
   hydrant: function (R, proj) {
     const p = proj.p;
-    box(R, p, 0.45, 0.45, 0.55, 0.55, 0, 5, { top: sh('#c0392b', 1.1), left: sh('#c0392b', 0.85), right: sh('#c0392b', 0.62) });
+    box(R, p, 0.45, 0.45, 0.55, 0.55, 0, 5, {
+      top: dith(sh('#c0392b', 1.2), sh('#c0392b', 1.02), 0.25, 97), left: sh('#c0392b', 0.85), right: sh('#c0392b', 0.62),
+    });
     box(R, p, 0.42, 0.47, 0.58, 0.53, 2.5, 3.5, { top: sh('#c0392b', 1), left: sh('#c0392b', 0.8), right: sh('#c0392b', 0.6) });
+    edgeAccent(R, p, 0.55, 0.55, 0, 5, sh('#c0392b', 0.42));
     const t = p(0.5, 0.5, 5);
     R.ell(t.x, t.y, 3, 2, sh('#e8e2d4', 1));
   },
 
   bin: function (R, proj, cfg) {
-    const p = proj.p, col = cfg.col || '#4a5a4a';
-    box(R, p, 0.4, 0.4, 0.6, 0.6, 0, cfg.h || 6, { top: sh(col, 1.1), left: sh(col, 0.85), right: sh(col, 0.62) });
-    R.fill(qTop(p, 0.38, 0.38, 0.62, 0.62, cfg.h || 6), sh(col, 0.72));
+    const p = proj.p, col = cfg.col || '#4a5a4a', h = cfg.h || 6;
+    box(R, p, 0.4, 0.4, 0.6, 0.6, 0, h, {
+      top: dith(sh(col, 1.15), sh(col, 1.0), 0.25, 41), left: dith(sh(col, 0.88), sh(col, 0.78), 0.25, 42), right: dith(sh(col, 0.64), sh(col, 0.56), 0.25, 43),
+    });
+    box(R, p, 0.37, 0.37, 0.63, 0.63, h, h + 1.2, { top: sh(col, 0.92), left: sh(col, 0.7), right: sh(col, 0.5) });
+    edgeAccent(R, p, 0.6, 0.6, 0, h, sh(col, 0.4));
   },
 
   dumpster: function (R, proj, cfg, fw, fh, rot) {
     const p = proj.p, col = '#3f6f4f';
     const a = rot ? [0.28, 0.1, 0.72, 0.9] : [0.1, 0.28, 0.9, 0.72];
-    box(R, p, a[0], a[1], a[2], a[3], 0, 7, { top: sh(col, 1.08), left: sh(col, 0.84), right: sh(col, 0.6) });
+    box(R, p, a[0], a[1], a[2], a[3], 0, 7, {
+      top: dith(sh(col, 1.16), sh(col, 1.0), 0.25, 101), left: dith(sh(col, 0.9), sh(col, 0.78), 0.25, 102), right: dith(sh(col, 0.66), sh(col, 0.56), 0.25, 103),
+    });
     R.fill(qTop(p, a[0] + 0.04, a[1] + 0.04, a[2] - 0.04, a[3] - 0.04, 7), sh(col, 0.68));
+    edgeAccent(R, p, a[2], a[3], 0, 7, sh(col, 0.4));
   },
 
   bikerack: function (R, proj, cfg, fw, fh, rot) {
@@ -821,10 +881,13 @@ const CUSTOM = {
 
   phonebooth: function (R, proj) {
     const p = proj.p;
-    box(R, p, 0.3, 0.3, 0.7, 0.7, 0, 14, { top: sh('#b8493f', 1.05), left: sh('#b8493f', 0.82), right: sh('#b8493f', 0.6) });
+    box(R, p, 0.3, 0.3, 0.7, 0.7, 0, 14, {
+      top: dith(sh('#b8493f', 1.14), sh('#b8493f', 0.98), 0.22, 107), left: sh('#b8493f', 0.82), right: sh('#b8493f', 0.6),
+    });
     R.fill(qLeft(p, 0.7, 0.36, 0.64, 4, 12), sh('#bfe6f2', 0.9));
     R.fill(qRight(p, 0.7, 0.36, 0.64, 4, 12), sh('#bfe6f2', 0.62));
     R.fill(qTop(p, 0.28, 0.28, 0.72, 0.72, 14), sh('#8a3a30', 1));
+    edgeAccent(R, p, 0.7, 0.7, 0, 14, sh('#b8493f', 0.42));
   },
 
   busstop: function (R, proj, cfg, fw, fh, rot) {
@@ -835,7 +898,7 @@ const CUSTOM = {
         { top: sh(m, 1), left: sh(m, 0.8), right: sh(m, 0.58) });
     }
     box(R, p, a[0] - 0.06, a[1] - 0.06, a[2] + 0.06, a[3] + 0.06, 12, 13.5,
-      { top: sh('#bfe6f2', 0.9), left: sh(m, 0.8), right: sh(m, 0.58) });
+      { top: dith(sh(m, 1.1), sh(m, 0.94), 0.25, 109), left: sh(m, 0.8), right: sh(m, 0.58) });
     if (rot) R.fill(qRight(p, a[2], a[1], a[3], 1, 11), sh('#bfe6f2', 0.5));
     else R.fill(qRight(p, a[2], a[1], a[3], 1, 11), sh('#bfe6f2', 0.5));
   },
@@ -846,8 +909,9 @@ const CUSTOM = {
     for (const t of [0.24, 0.76]) {
       box(R, p, t - 0.04, 0.46, t + 0.04, 0.54, 6, 15, { top: '#6a4a2a', left: sh('#6a4a2a', 0.8), right: sh('#6a4a2a', 0.58) });
     }
-    pyramid(R, p, 0.16, 0.16, 0.84, 0.84, 15, 20,
-      { far: sh('#8a5a3a', 1.02), left: sh('#8a5a3a', 0.78), right: sh('#8a5a3a', 0.56) });
+    pyramid(R, p, 0.16, 0.16, 0.84, 0.84, 15, 20, {
+      far: dith(sh('#8a5a3a', 1.08), sh('#8a5a3a', 0.96), 0.25, 111), left: sh('#8a5a3a', 0.78), right: sh('#8a5a3a', 0.56),
+    });
   },
 
   fountain: function (R, proj) {
@@ -863,15 +927,20 @@ const CUSTOM = {
 
   statue: function (R, proj) {
     const p = proj.p, stone = '#b9b2a6';
-    box(R, p, 0.3, 0.3, 0.7, 0.7, 0, 6, { top: sh(stone, 1.05), left: sh(stone, 0.82), right: sh(stone, 0.6) });
+    box(R, p, 0.3, 0.3, 0.7, 0.7, 0, 6, {
+      top: dith(sh(stone, 1.14), sh(stone, 0.98), 0.25, 113), left: sh(stone, 0.82), right: sh(stone, 0.6),
+    });
     box(R, p, 0.42, 0.42, 0.58, 0.58, 6, 16, { top: sh(stone, 1.1), left: sh(stone, 0.88), right: sh(stone, 0.64) });
+    edgeAccent(R, p, 0.7, 0.7, 0, 6, sh(stone, 0.4));
     const h = p(0.5, 0.5, 19);
     R.ell(h.x, h.y, 3, 3, sh(stone, 1.15));
   },
 
   pool: function (R, proj) {
     const p = proj.p;
-    box(R, p, 0.06, 0.06, 0.94, 0.94, 0, 2, { top: sh('#d8d2c4', 1.02), left: sh('#c0bab0', 0.84), right: sh('#c0bab0', 0.6) });
+    box(R, p, 0.06, 0.06, 0.94, 0.94, 0, 2, {
+      top: dith(sh('#d8d2c4', 1.08), sh('#d8d2c4', 0.96), 0.25, 117), left: sh('#c0bab0', 0.84), right: sh('#c0bab0', 0.6),
+    });
     R.fill(qTop(p, 0.16, 0.16, 0.84, 0.84, 2), dith(sh('#3f9fd0', 1), sh('#358fc0', 1), 0.25, 31));
     R.fill(qTop(p, 0.16, 0.16, 0.84, 0.3, 2), sh('#5fc0e0', 1));
   },
@@ -895,7 +964,7 @@ const CUSTOM = {
     const along = rot ? 'row' : 'col';
     const prof = [{ s: 0.1, z: 0 }, { s: 0.5, z: 12 }, { s: 0.9, z: 0 }];
     extrude(R, p, along, 0.12, 0.88, prof,
-      (A, B) => (B.z < A.z ? sh(col, 0.72) : sh(col, 1.02)), sh(col, 0.6));
+      (A, B, i) => dith(sh(col, B.z < A.z ? 0.78 : 1.1), sh(col, B.z < A.z ? 0.66 : 0.96), 0.25, 119 + i), sh(col, 0.6));
     const a = rot ? p(0.12, 0.5, 12) : p(0.5, 0.12, 12);
     const b = rot ? p(0.88, 0.5, 12) : p(0.5, 0.88, 12);
     R.line(a.x, a.y, b.x, b.y, sh(col, 1.15));
@@ -909,8 +978,9 @@ const CUSTOM = {
         const q = rot ? { c: 0.5, r: t } : { c: t, r: 0.5 };
         const z = row * 3;
         const shade = 0.7 + (k % 2) * 0.2 + row * 0.05;
-        box(R, p, q.c - (rot ? 0.2 : 0.09), q.r - (rot ? 0.09 : 0.2), q.c + (rot ? 0.2 : 0.09), q.r + (rot ? 0.09 : 0.2), z, z + 3,
-          { top: sh('#c9a878', shade + 0.2), left: sh('#8a5a2a', shade), right: sh('#6a4520', shade) });
+        box(R, p, q.c - (rot ? 0.2 : 0.09), q.r - (rot ? 0.09 : 0.2), q.c + (rot ? 0.2 : 0.09), q.r + (rot ? 0.09 : 0.2), z, z + 3, {
+          top: dith(sh('#c9a878', shade + 0.26), sh('#c9a878', shade + 0.12), 0.3, 130 + row * 4 + k), left: sh('#8a5a2a', shade), right: sh('#6a4520', shade),
+        });
       }
     }
   },
@@ -931,14 +1001,17 @@ const CUSTOM = {
     const cabTop = cfg.tall ? 10 : 8.5;
     const bedTop = cfg.tall ? 10 : 6.5;
     const A = rot ? [0.26, 0.06, 0.74, 0.94] : [0.06, 0.26, 0.94, 0.74];
-    box(R, p, A[0], A[1], A[2], A[3], 1.5, 4.5,
-      { top: sh(body, 0.9), left: sh(body, 0.72), right: sh(body, 0.52) });
+    box(R, p, A[0], A[1], A[2], A[3], 1.5, 4.5, {
+      top: dith(sh(body, 0.98), sh(body, 0.84), 0.25, 141), left: sh(body, 0.72), right: sh(body, 0.52),
+    });
     const cabA = rot ? [A[0], A[1], A[2], A[1] + 0.3] : [A[0], A[1], A[0] + 0.3, A[3]];
-    box(R, p, cabA[0], cabA[1], cabA[2], cabA[3], 4.5, cabTop,
-      { top: sh(body, 1.06), left: sh(body, 0.84), right: sh(body, 0.6) });
+    box(R, p, cabA[0], cabA[1], cabA[2], cabA[3], 4.5, cabTop, {
+      top: dith(sh(body, 1.14), sh(body, 1.0), 0.25, 143), left: sh(body, 0.84), right: sh(body, 0.6),
+    });
     const bedA = rot ? [A[0] + 0.03, A[1] + 0.32, A[2] - 0.03, A[3]] : [A[0] + 0.32, A[1] + 0.03, A[2], A[3] - 0.03];
-    box(R, p, bedA[0], bedA[1], bedA[2], bedA[3], 4.5, bedTop,
-      { top: sh(box2, 1.06), left: sh(box2, 0.84), right: sh(box2, 0.6) });
+    box(R, p, bedA[0], bedA[1], bedA[2], bedA[3], 4.5, bedTop, {
+      top: dith(sh(box2, 1.14), sh(box2, 1.0), 0.25, 145), left: sh(box2, 0.84), right: sh(box2, 0.6),
+    });
     // windscreen
     if (rot) R.fill(qRight(p, cabA[2], cabA[1] + 0.06, cabA[3] - 0.02, cabTop - 3, cabTop - 0.6), sh('#bfe6f2', 0.66));
     else R.fill(qLeft(p, cabA[3], cabA[0] + 0.06, cabA[2] - 0.02, cabTop - 3, cabTop - 0.6), sh('#bfe6f2', 0.86));
@@ -957,7 +1030,9 @@ const CUSTOM = {
   tractor: function (R, proj, cfg, fw, fh, rot) {
     const p = proj.p, body = '#3f7a3f';
     const A = rot ? [0.36, 0.2, 0.64, 0.8] : [0.2, 0.36, 0.8, 0.64];
-    box(R, p, A[0], A[1], A[2], A[3], 3, 9, { top: sh(body, 1.05), left: sh(body, 0.82), right: sh(body, 0.6) });
+    box(R, p, A[0], A[1], A[2], A[3], 3, 9, {
+      top: dith(sh(body, 1.14), sh(body, 0.98), 0.25, 147), left: sh(body, 0.82), right: sh(body, 0.6),
+    });
     box(R, p, A[0] + 0.06, A[1] + 0.06, A[2] - 0.06, A[3] - 0.06, 9, 14,
       { top: sh('#2a2a2a', 1), left: sh('#3a3a3a', 1), right: sh('#2a2a2a', 1) });
     const rear = rot ? p(0.5, 0.78, 0) : p(0.78, 0.5, 0);
@@ -987,7 +1062,7 @@ const CUSTOM = {
     R.ell(top.x, top.y + 1, 6, 2, sh('#8a6a3a', 1));
     R.set(Math.round(top.x - 2), Math.round(top.y + 3), sh('#2a2a2a', 1));
     R.set(Math.round(top.x + 2), Math.round(top.y + 3), sh('#2a2a2a', 1));
-    R.fill(qLeft(p, 0.56, 0.36, 0.64, 6, 12), sh('#b8493f', 1));
+    R.fill(qLeft(p, 0.56, 0.36, 0.64, 6, 12), dith(sh('#b8493f', 1.08), sh('#b8493f', 0.92), 0.28, 179));
   },
 
   haybale: function (R, proj, cfg, fw, fh, rot) {
@@ -999,7 +1074,7 @@ const CUSTOM = {
 
   deadtree: function (R, proj) {
     const p = proj.p, c = p(0.5, 0.5, 0), w = '#4a3f38';
-    box(R, p, 0.44, 0.44, 0.56, 0.56, 0, 10, { top: sh(w, 1), left: sh(w, 0.8), right: sh(w, 0.58) });
+    box(R, p, 0.44, 0.44, 0.56, 0.56, 0, 10, { top: dith(sh(w, 1.1), sh(w, 0.92), 0.3, 157), left: sh(w, 0.8), right: sh(w, 0.58) });
     for (const a of [-1.0, -0.45, 0.45, 1.0]) {
       R.line(c.x, c.y - 9, c.x + Math.sin(a) * 10, c.y - 18 - Math.cos(a) * 3, sh(w, 1.05));
       R.line(c.x + Math.sin(a) * 7, c.y - 15, c.x + Math.sin(a) * 13, c.y - 21, sh(w, 0.85));
@@ -1040,9 +1115,11 @@ const CUSTOM = {
     const p = proj.p;
     const gifts = [[0.3, 0.3, 5, '#b8493f', '#f5e58a'], [0.62, 0.4, 4, '#3f6fa8', '#e8e2d4'], [0.42, 0.66, 6, '#3f7a3f', '#ff3d7f']];
     gifts.sort((a, b) => (a[0] + a[1]) - (b[0] + b[1]));
+    let gi = 0;
     for (const g of gifts) {
-      box(R, p, g[0] - 0.14, g[1] - 0.14, g[0] + 0.14, g[1] + 0.14, 0, g[2],
-        { top: sh(g[3], 1.08), left: sh(g[3], 0.84), right: sh(g[3], 0.6) });
+      box(R, p, g[0] - 0.14, g[1] - 0.14, g[0] + 0.14, g[1] + 0.14, 0, g[2], {
+        top: dith(sh(g[3], 1.16), sh(g[3], 1.0), 0.25, 150 + gi++), left: sh(g[3], 0.84), right: sh(g[3], 0.6),
+      });
       R.fill(qLeft(p, g[1] + 0.14, g[0] - 0.03, g[0] + 0.03, 0, g[2]), sh(g[4], 1));
       R.fill(qTop(p, g[0] - 0.14, g[1] - 0.03, g[0] + 0.14, g[1] + 0.03, g[2]), sh(g[4], 1));
     }
@@ -1065,7 +1142,7 @@ const CUSTOM = {
     eggs.sort((a, b) => (a[0] + a[1]) - (b[0] + b[1]));
     for (const e of eggs) {
       const c = p(e[0], e[1], 0);
-      R.ell(c.x, c.y - 3, 3, 4, sh(e[2], 1.05));
+      R.ell(c.x, c.y - 3, 3, 4, dith(sh(e[2], 1.1), sh(e[2], 0.94), 0.3, hashStr(e[2]) & 255));
       R.ell(c.x - 1, c.y - 4, 1, 2, sh(e[2], 1.25));
       R.line(c.x - 2, c.y - 3, c.x + 2, c.y - 3, sh(e[2], 0.7));
     }
@@ -1102,12 +1179,14 @@ const CUSTOM = {
   bench: function (R, proj, cfg, fw, fh, rot) {
     const p = proj.p, w = '#8a5a2a';
     const a = rot ? 0.2 : 0.05, b = rot ? 0.8 : 0.95;
+    const seatCol = { top: dith(sh(w, 1.1), sh(w, 0.94), 0.3, 159), left: sh(w, 0.8), right: sh(w, 0.58) };
+    const backCol = { top: dith(sh(w, 1.14), sh(w, 0.98), 0.3, 161), left: sh(w, 0.85), right: sh(w, 0.6) };
     if (rot) {
-      box(R, p, a, 0.38, b, 0.62, 2, 3.5, { top: sh(w, 1), left: sh(w, 0.8), right: sh(w, 0.58) });
-      box(R, p, a, 0.55, b, 0.62, 3.5, 8, { top: sh(w, 1.05), left: sh(w, 0.85), right: sh(w, 0.6) });
+      box(R, p, a, 0.38, b, 0.62, 2, 3.5, seatCol);
+      box(R, p, a, 0.55, b, 0.62, 3.5, 8, backCol);
     } else {
-      box(R, p, 0.38, a, 0.62, b, 2, 3.5, { top: sh(w, 1), left: sh(w, 0.8), right: sh(w, 0.58) });
-      box(R, p, 0.55, a, 0.62, b, 3.5, 8, { top: sh(w, 1.05), left: sh(w, 0.85), right: sh(w, 0.6) });
+      box(R, p, 0.38, a, 0.62, b, 2, 3.5, seatCol);
+      box(R, p, 0.55, a, 0.62, b, 3.5, 8, backCol);
     }
   },
 
@@ -1125,40 +1204,61 @@ const CUSTOM = {
     const p = proj.p;
     box(R, p, 0.47, 0.47, 0.53, 0.53, 0, 5, { top: '#5a3a22', left: sh('#5a3a22', 0.8), right: sh('#5a3a22', 0.58) });
     box(R, p, 0.36, 0.42, 0.64, 0.58, 5, 8, { top: '#9aa0a3', left: sh('#9aa0a3', 0.82), right: sh('#9aa0a3', 0.6) });
+    edgeAccent(R, p, 0.64, 0.58, 5, 8, sh('#9aa0a3', 0.4));
   },
 
   car: function (R, proj, cfg, fw, fh, rot) {
     const p = proj.p, body = cfg.body || '#b8493f';
     const lo = 0.12, hi = 0.88, nlo = 0.3, nhi = 0.7;
     const A = rot ? [nlo, lo, nhi, hi] : [lo, nlo, hi, nhi];
-    box(R, p, A[0], A[1], A[2], A[3], 1, 5,
-      { top: sh(body, 1.05), left: sh(body, 0.82), right: sh(body, 0.6) });
+    box(R, p, A[0], A[1], A[2], A[3], 1, 5, {
+      top: dith(sh(body, 1.16), sh(body, 1.0), 0.25, 163), left: sh(body, 0.82), right: sh(body, 0.6),
+    });
     const B = rot ? [nlo + 0.06, lo + 0.22, nhi - 0.06, hi - 0.22] : [lo + 0.22, nlo + 0.06, hi - 0.22, nhi - 0.06];
     box(R, p, B[0], B[1], B[2], B[3], 5, 8,
       { top: sh(body, 0.9), left: sh('#bfe6f2', 0.86), right: sh('#bfe6f2', 0.6) });
     R.fill(qLeft(p, A[3], A[0], A[2], 1, 1.8), sh('#1a1a1a', 1));
+    edgeAccent(R, p, A[2], A[3], 1, 5, sh(body, 0.42));
   },
 
   bike: function (R, proj, cfg, fw, fh, rot) {
     const p = proj.p, c = p(0.5, 0.5, 0);
     const dx = rot ? 3 : 5, dy = rot ? 3 : 1;
-    R.ell(c.x - dx, c.y - 3 - dy, 3.2, 2.4, sh('#2a2a2a', 1));
-    R.ell(c.x + dx, c.y - 3 + dy, 3.2, 2.4, sh('#2a2a2a', 1));
-    R.line(c.x - dx, c.y - 4 - dy, c.x + dx, c.y - 4 + dy, sh(cfg.body || '#2de1c2', 1));
-    R.line(c.x, c.y - 9, c.x + dx * 0.4, c.y - 4, sh(cfg.body || '#2de1c2', 0.85));
+    const rear = { x: c.x - dx, y: c.y - 3 - dy }, front = { x: c.x + dx, y: c.y - 3 + dy };
+    const tire = sh('#1a1a1a', 1), rim = sh('#c9c2b8', 1), body = sh(cfg.body || '#2de1c2', 1);
+    R.ell(rear.x, rear.y, 3.2, 2.4, tire);
+    R.ell(front.x, front.y, 3.2, 2.4, tire);
+    R.ell(rear.x, rear.y, 1.8, 1.3, rim);
+    R.ell(front.x, front.y, 1.8, 1.3, rim);
+    const bb = { x: c.x + dx * 0.15, y: c.y - 4 };
+    const seat = { x: c.x - dx * 0.25, y: c.y - 10 };
+    const bar = { x: front.x, y: front.y - 5 };
+    R.line(rear.x, rear.y - 1, bb.x, bb.y, body);
+    R.line(bb.x, bb.y, seat.x, seat.y, body);
+    R.line(seat.x, seat.y, rear.x, rear.y - 1, sh(cfg.body || '#2de1c2', 0.85));
+    R.line(bb.x, bb.y, front.x, front.y - 1, body);
+    R.line(bb.x, bb.y, bar.x, bar.y, sh(cfg.body || '#2de1c2', 0.85));
+    R.line(bar.x - 2, bar.y, bar.x + 2, bar.y, sh('#2a2a2a', 1));
+    R.line(seat.x - 1, seat.y - 1, seat.x + 1, seat.y - 1, sh('#2a2a2a', 1));
+    R.set(Math.round(bb.x), Math.round(bb.y), sh('#2a2a2a', 1));
   },
 
   picnic: function (R, proj, cfg, fw, fh, rot) {
     const p = proj.p, w = '#9a7a4a';
     const A = rot ? [0.1, 0.3, 0.9, 0.7] : [0.3, 0.1, 0.7, 0.9];
-    box(R, p, A[0], A[1], A[2], A[3], 4, 5.5, { top: sh(w, 1), left: sh(w, 0.8), right: sh(w, 0.58) });
+    box(R, p, A[0], A[1], A[2], A[3], 4, 5.5, {
+      top: dith(sh(w, 1.1), sh(w, 0.94), 0.28, 167), left: sh(w, 0.8), right: sh(w, 0.58),
+    });
     const B = rot ? [0.15, 0.12, 0.85, 0.24] : [0.12, 0.15, 0.24, 0.85];
     box(R, p, B[0], B[1], B[2], B[3], 2, 3, { top: sh(w, 0.92), left: sh(w, 0.74), right: sh(w, 0.54) });
   },
 
   grave: function (R, proj) {
     const p = proj.p;
-    box(R, p, 0.34, 0.46, 0.66, 0.54, 0, 7, { top: '#c9c2b8', left: sh('#c9c2b8', 0.82), right: sh('#c9c2b8', 0.6) });
+    box(R, p, 0.34, 0.46, 0.66, 0.54, 0, 7, {
+      top: dith(sh('#c9c2b8', 1.06), sh('#c9c2b8', 0.92), 0.3, 173), left: sh('#c9c2b8', 0.82), right: sh('#c9c2b8', 0.6),
+    });
+    edgeAccent(R, p, 0.66, 0.54, 0, 7, sh('#c9c2b8', 0.42));
     const t = p(0.5, 0.54, 7);
     R.ell(t.x, t.y, 5, 2.5, sh('#c9c2b8', 0.95));
   },

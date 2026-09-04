@@ -1,3 +1,6 @@
+# Local scratch renders for reviewing in-progress visual work
+/poc-preview/
+
 # Logs
 logs
 *.log
