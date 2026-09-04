@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hollowbrook Hills — Isometric Town Builder</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header id="topbar">
+  <div class="brand">
+    <h1>HOLLOWBROOK <span>HILLS</span></h1>
+    <p class="tagline">Isometric Town Builder — for Kids on Bikes</p>
+  </div>
+
+  <div class="toolgroup">
+    <label class="field">
+      <span>Town Name</span>
+      <input type="text" id="mapName" value="New Town" maxlength="40">
+    </label>
+    <label class="field small"><span>W</span><input type="number" id="mapWidth" value="24" min="4" max="200"></label>
+    <label class="field small"><span>H</span><input type="number" id="mapHeight" value="18" min="4" max="200"></label>
+    <button id="btnResize" title="Set an exact size (crops from the far edges). To grow the map, use the Extend Map Edge tool instead.">Resize</button>
+    <button id="btnNew" class="danger" title="Clear the grid and start fresh">New</button>
+  </div>
+
+  <div class="toolgroup">
+    <label class="field">
+      <span>Season</span>
+      <select id="seasonSelect" title="Retints ground, trees and roofs">
+        <option value="summer">Summer</option>
+        <option value="autumn">Autumn</option>
+        <option value="winter">Winter</option>
+        <option value="halloween">Halloween</option>
+        <option value="christmas">Christmas</option>
+        <option value="easter">Easter</option>
+      </select>
+    </label>
+    <div class="modes" role="group" aria-label="Draw mode">
+      <span class="stepper-name">Draw</span>
+      <button data-mode="free" title="Paint tile by tile (F)">Free</button>
+      <button data-mode="line" title="Drag a straight run — ideal for roads (L)">Line</button>
+      <button data-mode="rect" title="Drag a filled rectangle (B)">Rect</button>
+      <button data-mode="fill" title="Flood-fill matching ground (X)">Fill</button>
+    </div>
+  </div>
+
+  <div class="toolgroup">
+    <button id="btnUndo" title="Undo (Ctrl+Z)">&#8630;</button>
+    <button id="btnRedo" title="Redo (Ctrl+Y)">&#8631;</button>
+    <div class="stepper" title="Rotate the next building (R)">
+      <span class="stepper-name">Rot</span>
+      <button id="btnRotate">&#8635;</button>
+      <span id="rotLabel">0°</span>
+    </div>
+    <div class="stepper" title="Brush size for ground &amp; elevation ( [ and ] )">
+      <span class="stepper-name">Brush</span>
+      <button id="btnBrushDown">&minus;</button>
+      <span id="brushLabel">1</span>
+      <button id="btnBrushUp">+</button>
+    </div>
+    <label class="checkbox" title="Toggle grid (G)">
+      <input type="checkbox" id="chkGrid" checked><span>Grid</span>
+    </label>
+    <div class="stepper" title="Zoom (mouse wheel, + / -)">
+      <button id="btnZoomOut">&minus;</button>
+      <span id="zoomLabel">100%</span>
+      <button id="btnZoomIn">+</button>
+    </div>
+  </div>
+
+  <div class="toolgroup">
+    <button id="btnSave" class="accent">&#128190; Save</button>
+    <button id="btnLoad" class="accent">&#128194; Load</button>
+    <button id="btnExport" class="accent2">&#128247; PNG</button>
+    <input type="file" id="fileInput" accept="application/json" hidden>
+  </div>
+</header>
+
+<main id="workspace">
+  <aside id="palette-pane">
+    <div class="search">
+      <input type="text" id="paletteSearch" placeholder="Search… ( / )" autocomplete="off">
+      <button id="btnClearSearch" title="Clear search">×</button>
+    </div>
+    <div id="palette"></div>
+  </aside>
+
+  <div id="canvasWrap">
+    <canvas id="mapCanvas"></canvas>
+    <div id="extendHandles" class="hidden"></div>
+    <div id="hint">Pick a tile on the left, then click or drag on the map.</div>
+  </div>
+
+  <aside id="sidebar">
+    <h2>Legend</h2>
+    <p class="side-help">Use <strong>Name a Place</strong> to tag a building or tile — named spots land here, ready to hand to your players. Click one to jump to it.</p>
+    <ul id="legendList"></ul>
+
+    <details open>
+      <summary>Keys</summary>
+      <dl class="keys">
+        <dt class="grp">Ground</dt><dd></dd>
+        <dt>W</dt><dd>Raise ground</dd>
+        <dt>Q</dt><dd>Lower ground</dd>
+        <dt>V</dt><dd>Level to first click</dd>
+        <dt>Alt+drag</dt><dd>Invert raise / lower</dd>
+        <dt>[ ]</dt><dd>Brush size</dd>
+
+        <dt class="grp">Tools</dt><dd></dd>
+        <dt>E</dt><dd>Eyedropper</dd>
+        <dt>D</dt><dd>Erase building</dd>
+        <dt>N</dt><dd>Name a place</dd>
+        <dt>M</dt><dd>Extend map edge</dd>
+        <dt>H</dt><dd>Pan tool</dd>
+        <dt>R</dt><dd>Rotate building</dd>
+
+        <dt class="grp">Palette</dt><dd></dd>
+        <dt>/</dt><dd>Search</dd>
+        <dt>, .</dt><dd>Previous / next item</dd>
+        <dt>&lt; &gt;</dt><dd>Previous / next category</dd>
+
+        <dt class="grp">Drawing</dt><dd></dd>
+        <dt>F L B X</dt><dd>Free / Line / Rect / Fill</dd>
+        <dt>Del</dt><dd>Remove building under cursor</dd>
+        <dt>Esc</dt><dd>Cancel a drag</dd>
+        <dt>Ctrl+Z / Y</dt><dd>Undo / redo</dd>
+
+        <dt class="grp">View</dt><dd></dd>
+        <dt>Arrows</dt><dd>Pan (Shift = faster)</dd>
+        <dt>C</dt><dd>Centre on map</dd>
+        <dt>0</dt><dd>Zoom to 100%</dd>
+        <dt>+ &minus;</dt><dd>Zoom</dd>
+        <dt>Wheel</dt><dd>Zoom</dd>
+        <dt>Right-drag</dt><dd>Pan</dd>
+        <dt>G</dt><dd>Grid on/off</dd>
+      </dl>
+    </details>
+
+    <details>
+      <summary>Hills, bridges &amp; tunnels</summary>
+      <p class="side-help"><strong>Raise</strong> / <strong>Lower</strong> build terraces in steps. Buildings need level ground, so placing one flattens its footprint, and raising any tile under a building lifts the whole pad.</p>
+      <p class="side-help">Lay bridge tiles across a gap, then drop a <strong>Ramp</strong> on the tile at each end: it works out what it is climbing — an adjacent bridge deck, or the tallest uphill neighbour — and slopes up to meet it, so the road joins cleanly. Tunnel portals cut into the cliff beside them automatically.</p>
+      <p class="side-help">Ground goes <strong>below</strong> the datum too, so you can dig cuttings, quarries and sunken riverbeds — handy for making a bridge meet the road.</p>
+      <p class="side-help">A tunnel portal renders into the cliff face of whichever uphill neighbour is behind it, matching that cliff's height. Place it on the <em>low</em> tile at the foot of the cliff.</p>
+      <p class="side-help">Lay a <strong>freeway two tiles wide</strong>: each tile becomes one carriageway, with the central reservation on the shared edge.</p>
+      <p class="side-help">Grow the map with the <strong>Extend Map Edge</strong> tool — pick it, then click an arrow off any edge to add four tiles there.</p>
+      <p class="side-help">As in any isometric view, a steep hill can hide tiles behind it. Lower the tile in front, or pan around, to reach them.</p>
+    </details>
+
+    <details>
+      <summary>Seasons</summary>
+      <p class="side-help">The <strong>Season</strong> menu retints ground, foliage and roofs — winter dusts everything with snow and bares the oaks, autumn turns them gold, Christmas adds eave lights. The Halloween, Christmas and Easter prop groups stay available whatever season you pick.</p>
+    </details>
+  </aside>
+</main>
+
+<footer id="statusbar">
+  <span id="statusTool">Tool: Grass</span>
+  <span id="statusCoords">—</span>
+  <span id="statusFoot"></span>
+  <span id="statusSize">24 x 18</span>
+</footer>
+
+<div id="exportOptions" class="modal hidden">
+  <div class="modal-card">
+    <h2>Export PNG</h2>
+    <label class="field">
+      <span>Scale</span>
+      <select id="exScale">
+        <option value="1">1x — small</option>
+        <option value="2" selected>2x — print friendly</option>
+        <option value="3">3x — poster</option>
+      </select>
+    </label>
+    <label class="checkbox"><input type="checkbox" id="exGrid"><span>Include grid lines</span></label>
+    <label class="checkbox"><input type="checkbox" id="exLabels" checked><span>Include place names</span></label>
+    <label class="checkbox"><input type="checkbox" id="exTransparent"><span>Transparent background</span></label>
+    <div class="modal-actions">
+      <button id="exCancel">Cancel</button>
+      <button id="exConfirm" class="accent2">Export</button>
+    </div>
+  </div>
+</div>
+
+<script src="iso.js"></script>
+<script src="terrain.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
