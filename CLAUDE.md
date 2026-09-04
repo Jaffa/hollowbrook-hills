@@ -85,14 +85,27 @@ plane. Those edges get a dark **seam line**. Keep it.
 
 `Iso.objectSprite(id, variant, rot, opts)`. `opts` is JSON-stringified into the
 cache key and merged over `cfg`, so a sprite can be specialised from map
-context. Three objects do this, all routed through **`spriteFor(o)` in
-`app.js`** — if you add a fourth, wire it there:
+context. Four objects do this, all routed through **`spriteFor(o)` in
+`app.js`** — if you add a fifth, wire it there:
 
 | Object | Derived from map | Function |
 | --- | --- | --- |
 | `tunnel` | which uphill neighbour's cliff is visible, and its height | `tunnelOpts` |
 | `ramp` | adjacent bridge deck, else tallest uphill neighbour | `rampOpts` |
 | `bridge` | height of the bank the span runs to | `bridgeOpts` |
+| `fence` | which neighbours are a same-style fence (a road-style connectivity mask) | `fenceOpts` |
+
+**Fences auto-connect like roads, but as objects, not terrain.** `fenceOpts`
+builds a 4-bit mask (same convention as `roadMask`: bit 0/1/2/3 = `+col`/
+`+row`/`-col`/`-row`) from same-style fence neighbours (`fenceStyle` reads
+`cfg.style`, so a `gate` still joins a `picket` run either side of it).
+`CUSTOM.fence` in `iso.js` turns that into up to two runs — one per axis that
+has any connection — each spanning from the tile centre out to every
+connected edge. Two opposite connections reproduce a plain straight span
+(and, at `len === 1`, land on the exact original post positions), one
+connection makes a dead-end stub, and perpendicular connections meet at
+centre to form a corner/T/cross. A fence with no connected neighbours falls
+back to a small isolated-post/stub render rather than a full span.
 
 > **⚠ `def.zmax` may be a function**, not a number, precisely because of this.
 > Never read `OBJECT_DEFS[id].zmax` directly. Ask the sprite: `spriteFor(o).h`.

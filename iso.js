@@ -661,69 +661,115 @@ const CUSTOM = {
     }
   },
 
-  /* ---- fences, walls and hedges ---- */
+  /* ---- fences, walls and hedges ----
+     Auto-connects like a road: cfg.mask (bit 0=+col,1=+row,2=-col,3=-row, set by
+     app.js's fenceOpts from same-style neighbours) says which tile edges this
+     fence actually reaches. A run is drawn per connected axis from the tile
+     centre out to each connected edge, so two opposite connections reproduce a
+     plain straight span, one produces a dead-end stub, and perpendicular
+     connections meet at the centre to form a corner/T/cross — all from the same
+     per-style drawing code, just over a different [t0,t1] range. */
   fence: function (R, proj, cfg, fw, fh, rot) {
-    const p = proj.p, st = cfg.style, col = cfg.col;
-    const H = cfg.h;
-    const at = (t) => (rot ? { c: 0.5, r: t } : { c: t, r: 0.5 });
+    const p = proj.p, st = cfg.style, col = cfg.col, H = cfg.h;
+    const mask = cfg.mask | 0;
+    const colPos = !!(mask & 1), rowPos = !!(mask & 2), colNeg = !!(mask & 4), rowNeg = !!(mask & 8);
+    const at = (axis, t) => (axis === 'row' ? { c: 0.5, r: t } : { c: t, r: 0.5 });
 
-    if (st === 'stone') {
-      const a = at(0), b = at(1);
-      const stoneCol = { top: dith(sh(col, 1.14), sh(col, 0.98), 0.3, 83), left: sh(col, 0.84), right: sh(col, 0.6) };
-      if (rot) box(R, p, 0.42, 0, 0.58, 1, 0, H, stoneCol);
-      else box(R, p, 0, 0.42, 1, 0.58, 0, H, stoneCol);
-      for (let k = 0; k < 6; k++) {
-        const t = k / 6 + 0.08;
-        const q = at(t);
-        const pt = p(q.c, q.r + (rot ? 0 : 0.08), H * (k % 2 ? 0.5 : 0.75));
-        R.set(Math.round(pt.x), Math.round(pt.y), sh(col, 0.7));
-      }
-      return;
+    const runs = [];
+    if (colPos || colNeg) runs.push({ axis: 'col', t0: colNeg ? 0 : 0.5, t1: colPos ? 1 : 0.5 });
+    if (rowPos || rowNeg) runs.push({ axis: 'row', t0: rowNeg ? 0 : 0.5, t1: rowPos ? 1 : 0.5 });
+
+    if (!runs.length) {
+      drawIsolated();
+    } else {
+      for (const run of runs) drawRun(run.axis, run.t0, run.t1);
     }
+    if (cfg.gate) drawGate();
 
-    if (st === 'hedge') {
-      const g = leafOf('bush', '#4a7a3a');
-      if (rot) box(R, p, 0.36, 0, 0.64, 1, 0, H, { top: dith(sh(g, 1.1), sh(g, 0.9), 0.4, 5), left: dith(sh(g, 0.86), sh(g, 0.7), 0.4, 7), right: dith(sh(g, 0.62), sh(g, 0.5), 0.4, 9) });
-      else box(R, p, 0, 0.36, 1, 0.64, 0, H, { top: dith(sh(g, 1.1), sh(g, 0.9), 0.4, 5), left: dith(sh(g, 0.86), sh(g, 0.7), 0.4, 7), right: dith(sh(g, 0.62), sh(g, 0.5), 0.4, 9) });
-      if (isSnowy()) {
-        if (rot) R.fill(qTop(p, 0.36, 0, 0.64, 1, H), sh('#e8eef4', 1));
-        else R.fill(qTop(p, 0, 0.36, 1, 0.64, H), sh('#e8eef4', 1));
+    function drawIsolated() {
+      if (st === 'stone') {
+        box(R, p, 0.38, 0.38, 0.62, 0.62, 0, H * 0.6,
+          { top: dith(sh(col, 1.14), sh(col, 0.98), 0.3, 83), left: sh(col, 0.84), right: sh(col, 0.6) });
+        return;
       }
-      return;
-    }
-
-    // Posts plus rails: picket, split rail and chain link differ only in infill.
-    const posts = st === 'picket' ? 7 : 3;
-    for (let k = 0; k <= posts; k++) {
-      const t = k / posts;
-      const q = at(t);
-      const w = st === 'picket' ? 0.035 : 0.05;
-      box(R, p, q.c - w, q.r - w, q.c + w, q.r + w, 0, st === 'picket' ? H : H * 1.05,
+      if (st === 'hedge') {
+        const g = leafOf('bush', '#4a7a3a');
+        box(R, p, 0.3, 0.3, 0.7, 0.7, 0, H * 0.7,
+          { top: dith(sh(g, 1.1), sh(g, 0.9), 0.4, 5), left: dith(sh(g, 0.86), sh(g, 0.7), 0.4, 7), right: dith(sh(g, 0.62), sh(g, 0.5), 0.4, 9) });
+        return;
+      }
+      const w = st === 'picket' ? 0.045 : 0.06;
+      box(R, p, 0.5 - w, 0.5 - w, 0.5 + w, 0.5 + w, 0, st === 'picket' ? H : H * 1.05,
         { top: sh(col, 1.05), left: sh(col, 0.85), right: sh(col, 0.62) });
-      if (st === 'picket') {
-        const tip = p(q.c, q.r, H + 1.5);
-        R.set(Math.round(tip.x), Math.round(tip.y), sh(col, 1.1));
+    }
+
+    function drawRun(axis, t0, t1) {
+      const len = t1 - t0;
+
+      if (st === 'stone') {
+        const stoneCol = { top: dith(sh(col, 1.14), sh(col, 0.98), 0.3, 83), left: sh(col, 0.84), right: sh(col, 0.6) };
+        if (axis === 'row') box(R, p, 0.42, t0, 0.58, t1, 0, H, stoneCol);
+        else box(R, p, t0, 0.42, t1, 0.58, 0, H, stoneCol);
+        const n = Math.max(1, Math.round(len * 6));
+        for (let k = 0; k < n; k++) {
+          const t = t0 + (k + 0.5) / n * len;
+          const q = at(axis, t);
+          const pt = p(q.c, q.r + (axis === 'row' ? 0 : 0.08), H * (k % 2 ? 0.5 : 0.75));
+          R.set(Math.round(pt.x), Math.round(pt.y), sh(col, 0.7));
+        }
+        return;
+      }
+
+      if (st === 'hedge') {
+        const g = leafOf('bush', '#4a7a3a');
+        const hedgeCol = { top: dith(sh(g, 1.1), sh(g, 0.9), 0.4, 5), left: dith(sh(g, 0.86), sh(g, 0.7), 0.4, 7), right: dith(sh(g, 0.62), sh(g, 0.5), 0.4, 9) };
+        if (axis === 'row') box(R, p, 0.36, t0, 0.64, t1, 0, H, hedgeCol);
+        else box(R, p, t0, 0.36, t1, 0.64, 0, H, hedgeCol);
+        if (isSnowy()) {
+          if (axis === 'row') R.fill(qTop(p, 0.36, t0, 0.64, t1, H), sh('#e8eef4', 1));
+          else R.fill(qTop(p, t0, 0.36, t1, 0.64, H), sh('#e8eef4', 1));
+        }
+        return;
+      }
+
+      // Posts plus rails: picket, split rail and chain link differ only in infill.
+      // Post/mesh counts scale with the run's length so a full 2-way span still
+      // lands on the exact original post positions (len=1 reproduces k/posts).
+      const postsPerTile = st === 'picket' ? 7 : 3;
+      const n = Math.max(1, Math.round(len * postsPerTile));
+      for (let k = 0; k <= n; k++) {
+        const t = t0 + k / n * len;
+        const q = at(axis, t);
+        const w = st === 'picket' ? 0.035 : 0.05;
+        box(R, p, q.c - w, q.r - w, q.c + w, q.r + w, 0, st === 'picket' ? H : H * 1.05,
+          { top: sh(col, 1.05), left: sh(col, 0.85), right: sh(col, 0.62) });
+        if (st === 'picket') {
+          const tip = p(q.c, q.r, H + 1.5);
+          R.set(Math.round(tip.x), Math.round(tip.y), sh(col, 1.1));
+        }
+      }
+      const rails = st === 'chain' ? [H * 0.95, H * 0.1] : st === 'split' ? [H * 0.8, H * 0.42] : [H * 0.72, H * 0.32];
+      let ri = 0;
+      for (const z of rails) {
+        const railCol = { top: dith(sh(col, 1.08), sh(col, 0.94), 0.28, 87 + ri++), left: sh(col, 0.82), right: sh(col, 0.6) };
+        if (axis === 'row') box(R, p, 0.47, t0, 0.53, t1, z - 1, z, railCol);
+        else box(R, p, t0, 0.47, t1, 0.53, z - 1, z, railCol);
+      }
+      if (st === 'chain') {
+        const mesh = sh(col, 0.78);
+        const m = Math.max(1, Math.round(len * 14));
+        for (let k = 0; k < m; k++) {
+          const t = t0 + (k + 0.3) / m * len;
+          const q = at(axis, t);
+          const lo = p(q.c, q.r, H * 0.15), hi = p(q.c, q.r, H * 0.9);
+          R.line(lo.x, lo.y, hi.x, hi.y, mesh);
+        }
       }
     }
-    const rails = st === 'chain' ? [H * 0.95, H * 0.1] : st === 'split' ? [H * 0.8, H * 0.42] : [H * 0.72, H * 0.32];
-    let ri = 0;
-    for (const z of rails) {
-      const railCol = { top: dith(sh(col, 1.08), sh(col, 0.94), 0.28, 87 + ri++), left: sh(col, 0.82), right: sh(col, 0.6) };
-      if (rot) box(R, p, 0.47, 0, 0.53, 1, z - 1, z, railCol);
-      else box(R, p, 0, 0.47, 1, 0.53, z - 1, z, railCol);
-    }
-    if (st === 'chain') {
-      const mesh = sh(col, 0.78);
-      for (let k = 0; k < 14; k++) {
-        const t = k / 14 + 0.02;
-        const q = at(t);
-        const lo = p(q.c, q.r, H * 0.15), hi = p(q.c, q.r, H * 0.9);
-        R.line(lo.x, lo.y, hi.x, hi.y, mesh);
-      }
-    }
-    if (cfg.gate) {
-      const q = at(0.5);
-      if (rot) box(R, p, 0.4, 0.36, 0.6, 0.64, 0, H * 1.15, { top: sh(col, 1.1), left: sh(col, 0.9), right: sh(col, 0.66) });
+
+    function drawGate() {
+      const axis = (colPos && colNeg) ? 'col' : (rowPos && rowNeg) ? 'row' : (rot ? 'row' : 'col');
+      if (axis === 'row') box(R, p, 0.4, 0.36, 0.6, 0.64, 0, H * 1.15, { top: sh(col, 1.1), left: sh(col, 0.9), right: sh(col, 0.66) });
       else box(R, p, 0.36, 0.4, 0.64, 0.6, 0, H * 1.15, { top: sh(col, 1.1), left: sh(col, 0.9), right: sh(col, 0.66) });
     }
   },
@@ -957,6 +1003,31 @@ const CUSTOM = {
       const a = k * Math.PI / 2.5 + 0.4;
       R.set(Math.round(c.x + Math.cos(a) * 9), Math.round(c.y + Math.sin(a) * 4), sh('#8a8f94', 1));
     }
+  },
+
+  // A freestanding blaze, no fuel pile — for scorched ground, hazard scenes, etc.
+  fire: function (R, proj) {
+    const p = proj.p, c = p(0.5, 0.5, 0);
+    R.ell(c.x, c.y, 9, 5, sh('#241a12', 1));
+    R.ell(c.x, c.y, 6, 3, sh('#3a2a1a', 0.9));
+    const tongues = [[-3, 1, 5, 8], [2, 0, 4, 10], [0, -1, 6, 13]];
+    tongues.forEach(function (t, i) {
+      const dx = t[0], dy = t[1], w = t[2], h = t[3];
+      const cx = c.x + dx, cy = c.y - 2 + dy;
+      R.fill([
+        { x: cx - w * 0.3, y: cy }, { x: cx + w * 0.3, y: cy },
+        { x: cx + w * 0.55, y: cy - h * 0.35 }, { x: cx, y: cy - h },
+        { x: cx - w * 0.55, y: cy - h * 0.35 },
+      ], dith(sh('#e8631f', 1), sh('#c0392b', 0.95), 0.3, 40 + i));
+    });
+    R.ell(c.x, c.y - 7, 4, 5, dith(sh('#f5a23d', 1), sh('#e8731f', 1), 0.3, 44));
+    R.ell(c.x, c.y - 9, 2, 3, sh('#f5e58a', 1));
+    for (let k = 0; k < 4; k++) {
+      const a = hash2(k, 1, 51) * Math.PI * 2, rr = 5 + hash2(k, 2, 53) * 3;
+      R.set(Math.round(c.x + Math.cos(a) * rr), Math.round(c.y - Math.sin(a) * rr * 0.4), sh('#ff8a3d', 1));
+    }
+    R.set(Math.round(c.x - 1), Math.round(c.y - 16), sh('#6a6a6a', 0.5));
+    R.set(Math.round(c.x + 1), Math.round(c.y - 19), sh('#7a7a7a', 0.4));
   },
 
   tent: function (R, proj, cfg, fw, fh, rot) {
@@ -1358,7 +1429,10 @@ const B = {
   /* ---- fences, walls, hedges ---- */
   fence: {
     label: 'Fence', fw: 1, fh: 1, zmax: 16, build: CUSTOM.fence,
-    cfg: { style: 'picket', col: '#e8e2d4', h: 4.5 },
+    // mask defaults to a straight through-run (bits 0+2 = +col/-col) so the
+    // palette icon and sprite tests still show a normal span; app.js overrides
+    // it per-tile from actual same-style neighbours once placed on the map.
+    cfg: { style: 'picket', col: '#e8e2d4', h: 4.5, mask: 5 },
     variants: {
       picket: { label: 'Picket Fence', style: 'picket', col: '#e8e2d4', h: 4.5 },
       split: { label: 'Split-Rail Fence', style: 'split', col: '#8a6a4a', h: 5 },
@@ -1394,6 +1468,7 @@ const B = {
   statue: { label: 'Statue', fw: 1, fh: 1, zmax: 26, cfg: {}, build: CUSTOM.statue },
   pool: { label: 'Swimming Pool', fw: 1, fh: 1, zmax: 10, cfg: {}, build: CUSTOM.pool },
   campfire: { label: 'Campfire', fw: 1, fh: 1, zmax: 14, cfg: {}, build: CUSTOM.campfire },
+  fire: { label: 'Fire', fw: 1, fh: 1, zmax: 22, cfg: {}, build: CUSTOM.fire },
   tent: { label: 'Tent', fw: 1, fh: 1, zmax: 18, cfg: { col: '#c06a2a' }, build: CUSTOM.tent },
   woodpile: { label: 'Wood Pile', fw: 1, fh: 1, zmax: 16, cfg: {}, build: CUSTOM.woodpile },
   satellite: { label: 'Satellite Dish', fw: 1, fh: 1, zmax: 20, cfg: {}, build: CUSTOM.satellite },

@@ -376,10 +376,33 @@ function rampOpts(o) {
   return out;
 }
 
+/* A fence's own drawing style, ignoring the gate/whatever variant label, so a
+   gate still joins the picket fence either side of it. */
+function fenceStyle(o) {
+  const def = I.OBJECT_DEFS.fence;
+  const v = def.variants && def.variants[o.variant];
+  return (v && v.style) || def.cfg.style;
+}
+
+/* Bit i set when the same-style fence neighbour in that direction connects,
+   same mask convention as roadMask (0=+col,1=+row,2=-col,3=-row). */
+function fenceOpts(o) {
+  const style = fenceStyle(o);
+  let mask = 0;
+  for (let i = 0; i < 4; i++) {
+    const d = T.DIRS[i], nc = o.col + d.dc, nr = o.row + d.dr;
+    if (!inBounds(nc, nr)) continue;
+    const nb = objAt(nc, nr);
+    if (nb && nb.id === 'fence' && fenceStyle(nb) === style) mask |= (1 << i);
+  }
+  return { mask: mask };
+}
+
 function spriteFor(o) {
   if (o.id === 'tunnel') return I.objectSprite(o.id, o.variant, o.rot, tunnelOpts(o));
   if (o.id === 'ramp') return I.objectSprite(o.id, o.variant, o.rot, rampOpts(o));
   if (o.id === 'bridge') return I.objectSprite(o.id, o.variant, o.rot, bridgeOpts(o));
+  if (o.id === 'fence') return I.objectSprite(o.id, o.variant, o.rot, fenceOpts(o));
   return I.objectSprite(o.id, o.variant, o.rot);
 }
 
@@ -792,7 +815,7 @@ const PALETTE = [
     { kind: 'object', id: 'pine' }, { kind: 'object', id: 'deadtree' },
     { kind: 'object', id: 'bush' }, { kind: 'object', id: 'boulder' },
     { kind: 'object', id: 'flowerbed' }, { kind: 'object', id: 'grave' },
-    { kind: 'object', id: 'campfire' }, { kind: 'object', id: 'tent' },
+    { kind: 'object', id: 'campfire' }, { kind: 'object', id: 'fire' }, { kind: 'object', id: 'tent' },
     { kind: 'object', id: 'woodpile' },
   ] },
   { cat: 'Vehicles', items: [
